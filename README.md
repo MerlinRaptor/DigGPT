@@ -1,2 +1,2 @@
 # DigGPT
-Transformer from scratch.
+Transformer from scratch.Basically rewrited from Andrej Karpathy's lecture code. Going to implement training method for efficiency that will complexify the model thus empower it to have teeth.
