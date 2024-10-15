@@ -79,6 +79,30 @@ class Head(nn.Module):
         out = wei @ v # B T C
         return out
     
+class MultiHeadAttention(nn.Module):
+
+    def __init__(self ,num_heads, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+
+    def forward(self, x):
+        return torch.cat([h(x) for h in self.heads], dim=-1)
+    
+
+# a FF layer to enable the model to "think and reflect on" the connection learned previously in attention pattern, avoiding information flow to the result too quickly
+class FeedFowardLayer(nn.Module):
+
+    def __init__(self, n_embd):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, n_embd),
+            nn.ReLU()
+            )
+
+    def forward(self, x):
+        return self.net(x)
+    
+
 
 class BigramLM(nn.Module):
     
@@ -87,7 +111,8 @@ class BigramLM(nn.Module):
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd) 
         self.lm_head = nn.Linear(n_embd,vocab_size)
         self.positin_embedding_table = nn.Embedding(block_size, n_embd)
-        self.sa_head = Head(n_embd)
+        self.sa_heads = MultiHeadAttention(num_heads=4, head_size= n_embd // 4)
+        self.ffwd = FeedFowardLayer(n_embd)
 
     def forward(self, idx, targets=None):
         B , T = idx.shape
@@ -95,7 +120,8 @@ class BigramLM(nn.Module):
         tok_emb = self.token_embedding_table(idx) #B, T, C
         pos_emb = self.positin_embedding_table(torch.arange(T, device=device)) #T C
         x = tok_emb + pos_emb # B T C
-        x = self.sa_head(x)
+        x = self.sa_heads(x)
+        x = self.ffwd(x)
         logits = self.lm_head(x) # B T vocab_size
 
         if targets is None:
