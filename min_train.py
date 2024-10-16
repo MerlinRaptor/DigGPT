@@ -10,10 +10,10 @@ eval_interval = 500
 learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200  # avoid the jitter of the loss by cal the mean among lots of batches
-n_embd = 32
-# n_head = 6
-# n_layer = 6
-# dropout = 0.2
+n_embd = 384
+n_head = 6
+n_layer = 6
+dropout = 0.2
 
 torch.manual_seed(42)
 
@@ -65,6 +65,7 @@ class Head(nn.Module):
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         B, T, C = x.shape
@@ -74,7 +75,8 @@ class Head(nn.Module):
         wei = q @ k.transpose(-2, -1) * (k.shape[-1]** -0.5)  #B T T
         #!!! It have a deep and vital reason to use matmul with transpose!!!
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
-        wei = F.softmax(wei, dim=-1) 
+        wei = F.softmax(wei, dim=-1)
+        wei = self.dropout(wei) 
         v = self.value(x) # B T hs
         out = wei @ v # B T C
         return out
@@ -85,10 +87,11 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
         self.proj = nn.Linear(n_embd, n_embd)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
 
-        return self.proj(torch.cat([h(x) for h in self.heads], dim=-1))
+        return self.dropout(self.proj(torch.cat([h(x) for h in self.heads], dim=-1)))
     
 
 # a FF layer to enable the model to "think and reflect on" the connection learned previously in attention pattern, avoiding information flow to the result too quickly
@@ -99,7 +102,8 @@ class FeedFowardLayer(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(n_embd, 4 * n_embd),
             nn.ReLU(),
-            nn.Linear(4 * n_embd, n_embd)
+            nn.Linear(4 * n_embd, n_embd),
+            nn.Dropout(dropout)
             )
 
     def forward(self, x):
@@ -129,13 +133,15 @@ class BigramLM(nn.Module):
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd) 
         self.lm_head = nn.Linear(n_embd,vocab_size)
         self.positin_embedding_table = nn.Embedding(block_size, n_embd)
-        self.blocks = nn.Sequential(
-            Block(n_embd, 4),
-            Block(n_embd, 4),
-            Block(n_embd, 4),
-            Block(n_embd, 4),
-            nn.LayerNorm(n_embd)
-        )
+        # self.blocks = nn.Sequential(
+        #     Block(n_embd, 4),
+        #     Block(n_embd, 4),
+        #     Block(n_embd, 4),
+        #     Block(n_embd, 4),
+        #     nn.LayerNorm(n_embd)
+        # )
+        self.blocks = nn.Sequential(*[Block(n_embd, n_head) for _ in range(n_layer)])
+        self.ln_f = nn.LayerNorm(n_embd)
 
     def forward(self, idx, targets=None):
         B , T = idx.shape
@@ -144,6 +150,7 @@ class BigramLM(nn.Module):
         pos_emb = self.positin_embedding_table(torch.arange(T, device=device)) #T C
         x = tok_emb + pos_emb # B T C
         x = self.blocks(x)
+        x = self.ln_f(x)    
         logits = self.lm_head(x) # B T vocab_size
 
         if targets is None:
@@ -169,6 +176,7 @@ class BigramLM(nn.Module):
     
 model = BigramLM()
 m = model.to(device)
+print(sum(p.numel() for p in m.parameters()) / 1e6, 'M parameters')
 
 optimizer = torch.optim.AdamW(model.parameters(), lr = learning_rate)
 
@@ -187,4 +195,5 @@ for iter in range(max_iters):
     optimizer.step()
 
 context = torch.zeros((1,1), dtype=torch.long, device=device)
-print(decode(m.generate(context, 500)[0].tolist()))
+# print(decode(m.generate(context, 500)[0].tolist()))
+open('output.txt','w').write(decode(m.generate(context, 10000)[0].tolist()))
