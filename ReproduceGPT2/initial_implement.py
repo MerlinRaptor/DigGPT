@@ -72,10 +72,14 @@ class Block(nn.Module):
         self.mlp = MLP(config)
 
     def forward(self, x):
-        x = self.ln_1(x)
-        x = x + self.attn(x)
-        x = self.ln_2(x)
-        x = x + self.mlp(x)
+        # wrong code:
+        # the wrong code below is not acutually, any mechanism inconsistent with the original setting would possibly lead to weight mismatch
+        # x = self.ln_1(x)
+        # x = x + self.attn(x)  
+        # x = self.ln_2(x)
+        # x = x + self.mlp(x)
+        x = x + self.attn(self.ln_1(x))
+        x = x + self.mlp(self.ln_2(x))
         return x
 
 
@@ -121,7 +125,7 @@ class GPT(nn.Module):
     @classmethod
     def get_pretrained(cls):
         model_type = 'gpt2' # 124M version
-        from transformers import GPT2LMHeadModel
+        from transformers import GPT2LMHeadModel    
         print(f'loading weights of pretrained {model_type}')
 
         config = GPTConfig()
@@ -158,14 +162,14 @@ class GPT(nn.Module):
     
 
 generate_batch = 5
-max_length = 35
+max_length = 100
 
 model = GPT.get_pretrained()
 model.eval()
 model.to('cuda')
 import tiktoken
 enc = tiktoken.get_encoding('gpt2')
-tokens = enc.encode('Hi, this is a large language model here,') # T = 10 currently
+tokens = enc.encode('Hi, I want to tell you a great story: long long ago,') # T = 15 currently
 tokens = torch.tensor(tokens, dtype=torch.long)
 tokens = tokens.unsqueeze(0).repeat(generate_batch, 1) # (B ,T)
 x = tokens.to('cuda')
@@ -183,6 +187,8 @@ while x.size(-1) < max_length:
 for i in range(generate_batch):
     tokens = x[i, :max_length].tolist()
     print(f'>>>{enc.decode(tokens)}')
+    # with open('initialGeneration.txt', 'a') as f:
+    #     f.write(f'>>>{enc.decode(tokens)} \r\n')
 
 
 # config = GPTConfig()
