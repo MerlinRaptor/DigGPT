@@ -108,7 +108,7 @@ class GPT(nn.Module):
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocabsize, bias = False)
 
-    def forward(self, idx):
+    def forward(self, idx, label=None):
         # idx: (B, T)
         B, T = idx.size()
         assert T <= self.config.blocksize, f'Sequence of length {T} cannot be longer than {self.config.blocksize}'
@@ -119,8 +119,11 @@ class GPT(nn.Module):
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)
-        x = self.lm_head(x) # logits
-        return x
+        logits = self.lm_head(x) # logits (B, T, vocabsize)
+        loss = None
+        if label is not None:  # (B, T)
+            loss = F.cross_entropy(logits.view(-1, logits.shape[-1]), label.view(-1))
+        return logits, loss
 
     @classmethod
     def get_pretrained(cls):
@@ -161,19 +164,52 @@ class GPT(nn.Module):
         return model
     
 
+
+#--------------------------------------------------------
+
+device = 'cpu'
+if torch.cuda.is_available():
+    device = 'cuda'
+print(f'using device:{device}')
+
+import tiktoken
+enc = tiktoken.get_encoding('gpt2')
+# model = GPT.get_pretrained()
+model = GPT(GPTConfig())
+model.to(device)
+with open('E:\Code\makemore\DignityGPT\input.txt', 'r') as f:
+    text = f.read()
+text = text[:2000]
+tokens = enc.encode(text)
+B, T = 4, 32
+assert B * T + 1 < 2000
+buf = torch.tensor(tokens[:B * T + 1 ])
+buf = buf.to(device)
+x = buf[:-1].view(B, T) # training sequence
+y = buf[1:].view(B, T) # label
+# logits, loss = model(x, y)
+# print(logits.size()) # (B, T, vocabsize)
+# print(loss)
+
+# optimize:
+optimizer = torch.optim.AdamW(model.parameters(), lr = 3e-4)
+for i in range(50):
+    optimizer.zero_grad()
+    logits, loss = model(x, y)
+    loss.backward()
+    optimizer.step()
+    print(f'{i} step, current loss: {loss}')
+
+import sys; sys.exit(0)
+# generate
+model.eval()
 generate_batch = 5
 max_length = 100
 
-model = GPT.get_pretrained()
-model.eval()
-model.to('cuda')
-import tiktoken
-enc = tiktoken.get_encoding('gpt2')
 tokens = enc.encode('Hi, I want to tell you a great story: long long ago,') # T = 15 currently
 tokens = torch.tensor(tokens, dtype=torch.long)
 tokens = tokens.unsqueeze(0).repeat(generate_batch, 1) # (B ,T)
 x = tokens.to('cuda')
-# generate
 while x.size(-1) < max_length:
     with torch.no_grad():
         logits = model(x)
