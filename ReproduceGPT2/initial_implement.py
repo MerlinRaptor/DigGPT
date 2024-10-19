@@ -21,8 +21,9 @@ class CasualSelfAttention(nn.Module):
         self.c_proj.RESIDUAL_INIT = True # flag for needing residual initialization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
-        self.register_buffer('bias', torch.tril(torch.ones(config.blocksize, config.blocksize)).view(1,1,config.blocksize,config.blocksize))
+        # self.register_buffer('bias', torch.tril(torch.ones(config.blocksize, config.blocksize)).view(1,1,config.blocksize,config.blocksize))
         # actually mask, following the huggingface naming
+        # no longer use after implementing flash attention
 
     def forward(self, x):
         B, T, C = x.size()
@@ -217,7 +218,13 @@ if torch.cuda.is_available():
     device = 'cuda'
 print(f'using device:{device}')
 
-train_loader = Dataloader(B = 4, T = 1024) 
+target_batchsize = 524288 # about 0.5M, to align with GPT3-small, so we need gradient accumulation
+print(f'total batchsize: {target_batchsize}')
+B = 4
+T = 1024
+grad_accum_steps = target_batchsize // (B * T) # 128
+print(f"gradient accumulation steps: {grad_accum_steps}")
+train_loader = Dataloader(B = B, T = T) 
 
 torch.set_float32_matmul_precision('high')
 
@@ -249,12 +256,16 @@ optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, dev
 
 for step in range(max_steps):
     t0 = time.time()
-    x, y = train_loader.next_batch()
-    x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
-    with torch.autocast(device_type=device, dtype=torch.bfloat16): # mixed precision training
-        logits, loss = model(x, y)
-    loss.backward()
+    loss_total = 0.0
+    for _ in range(grad_accum_steps):
+        x, y = train_loader.next_batch()
+        x, y = x.to(device), y.to(device)
+        with torch.autocast(device_type=device, dtype=torch.bfloat16): # mixed precision training
+            logits, loss = model(x, y)
+        loss = loss / grad_accum_steps
+        loss_total += loss.detach()
+        loss.backward()
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     lr = getlr(step)
     for param_group in optimizer.param_groups:
@@ -263,8 +274,8 @@ for step in range(max_steps):
     torch.cuda.synchronize() # synchronize gpu and cpu for timing accuracy
     t1 = time.time()
     dt = (t1 - t0) * 1000
-    tokenpers = (x.shape[0] * x.shape[1]) / (t1 - t0)
-    print(f'{step} step, current loss: {loss}| lr: {lr:.4e}| norm: {norm:.2f}| time for a batch: {dt}ms| token/dt: {tokenpers:.2f}')
+    tokenpers = grad_accum_steps * (x.shape[0] * x.shape[1]) / (t1 - t0)
+    print(f'{step} step, current loss: {loss_total}| lr: {lr:.4e}| norm: {norm:.2f}| time for a batch: {dt}ms| token/dt: {tokenpers:.2f}')
 
 import sys; sys.exit(0)
 # generate
