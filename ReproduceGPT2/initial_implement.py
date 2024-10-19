@@ -17,6 +17,7 @@ class CasualSelfAttention(nn.Module):
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
         # projection to mix muti-head
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj.RESIDUAL_INIT = True # flag for needing residual initialization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.register_buffer('bias', torch.tril(torch.ones(config.blocksize, config.blocksize)).view(1,1,config.blocksize,config.blocksize))
@@ -52,6 +53,7 @@ class MLP(nn.Module):
         # to study part: this dimension ascending and superposition (sparse autoencoder)
         self.gelu = nn.GELU(approximate='tanh')  # use a approximation to submit to the original version of GPT-2
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
+        self.c_proj.RESIDUAL_INIT = True
 
     def forward(self,x):
         x = self.c_fc(x)
@@ -107,6 +109,21 @@ class GPT(nn.Module):
             )
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocabsize, bias = False)
+        # weight sharing (tying) scheme (saving roghuly 1/3 paras)
+        self.transformer.wte.weight = self.lm_head.weight
+
+        self.apply(self.init_weight) # applying weight initialization for all the modules
+
+    def init_weight(self, module):
+        if isinstance(module, nn.Linear):
+            std = 0.02  # roughly consistent with Javier init
+            if hasattr(module, 'RESIDUAL_INIT'):
+                std *= (2 * self.config.n_layer) ** -0.5 # intialization for residual path, actually 2*n_layer layers of residual layer
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02) # wpe.weight is actually intialized with std=0.01 in original GPT2
 
     def forward(self, idx, label=None):
         # idx: (B, T)
@@ -140,8 +157,6 @@ class GPT(nn.Module):
         model_hf = GPT2LMHeadModel.from_pretrained('gpt2')
         sd_hf = model_hf.state_dict()
         sd_hf_keys = sd_hf.keys()
-        # sd_hf_keys = [k for k in sd_hf_keys if not k.endswith('.attn.masked_bias')]
-        # sd_hf_keys = [k for k in sd_hf_keys if not k.endswith('.attn.bias')]
         transposed = ['attn.c_attn.weight', 'attn.c_proj.weight', 'mlp.c_fc.weight', 'mlp.c_proj.weight'] # Openai trsnposed some weights for some reson
         for k in sd_keys:
             if any(k.endswith(trans) for trans in transposed):
@@ -150,16 +165,6 @@ class GPT(nn.Module):
             else:
                 with torch.no_grad():
                     sd[k].copy_(sd_hf[k])
-        # assert len(sd_hf_keys) == len(sd_keys), f"mismatched keys: {len(sd_hf_keys)} != {len(sd_keys)}"
-        # for k in sd_hf_keys:
-        #     if any(k.endswith(w) for w in transposed):
-        #         assert sd_hf[k].shape[::-1] == sd[k].shape
-        #         with torch.no_grad():
-        #             sd[k].copy_(sd_hf[k].t())
-        #     else:
-        #         assert sd_hf[k].shape == sd[k].shape
-        #         with torch.no_grad():
-        #             sd[k].copy_(sd_hf[k])
 
         return model
     
@@ -198,6 +203,10 @@ device = 'cpu'
 if torch.cuda.is_available():
     device = 'cuda'
 print(f'using device:{device}')
+
+torch.manual_seed(1337)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(1337)
 
 train_loader = Dataloader(4, 32) # B = 4, T = 32
 
