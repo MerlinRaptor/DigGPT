@@ -214,9 +214,28 @@ model = GPT(GPTConfig())
 model.to(device)
 # model = torch.compile(model)
 
+max_lr = 6e-4
+min_lr = max_lr*0.1
+warmup_steps = 10
+max_steps = 50
+# learning rate schedule
+def getlr(step):
+
+    if step < warmup_steps:
+        lr = (1 + step) * (max_lr/ (warmup_steps))
+        return lr
+    if step > max_steps:
+        return min_lr
+    lr = min_lr + 0.5 * (max_lr - min_lr) * (1 - math.cos((math.pi * (step - max_steps)) / (max_steps - warmup_steps)))
+    return lr
+    # decay_ratio = (step - warmup_steps) / (max_steps - warmup_steps) # decay_ratio from 0 to 1
+    # assert 0 <= decay_ratio <= 1
+    # coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
+    # return min_lr + coeff * (max_lr - min_lr)
+
 # optimize:
-optimizer = torch.optim.AdamW(model.parameters(), lr = 3e-4)
-for i in range(50):
+optimizer = torch.optim.AdamW(model.parameters(), lr = 3e-4, betas=(0.9, 0.95), eps=1e-8)
+for step in range(max_steps):
     t0 = time.time()
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
@@ -224,12 +243,16 @@ for i in range(50):
     with torch.autocast(device_type=device, dtype=torch.bfloat16): # mixed precision training
         logits, loss = model(x, y)
     loss.backward()
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    lr = getlr(step)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
     optimizer.step()
     torch.cuda.synchronize() # synchronize gpu and cpu for timing accuracy
     t1 = time.time()
     dt = (t1 - t0) * 1000
     tokenpers = (x.shape[0] * x.shape[1]) / (t1 - t0)
-    print(f'{i} step, current loss: {loss}, time for a batch: {dt}ms, token/dt: {tokenpers:.2f}')
+    print(f'{step} step, current loss: {loss}, lr: {lr:.4e}, norm: {norm:.2f}, time for a batch: {dt}ms, token/dt: {tokenpers:.2f}')
 
 import sys; sys.exit(0)
 # generate
