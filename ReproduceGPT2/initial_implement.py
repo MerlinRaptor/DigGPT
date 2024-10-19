@@ -1,5 +1,6 @@
 import math
 from dataclasses import dataclass
+import inspect
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -170,7 +171,17 @@ class GPT(nn.Module):
 
         return model
     
-
+    def configure_optimizers(self, weight_decay, learning_rate, device):
+        decay_params = [p for n, p in self.named_parameters() if p.dim() >= 2 and p.requires_grad]
+        nodecay_params = [p for n, p in self.named_parameters() if p.dim() < 2 and p.requires_grad]
+        optim_groups = [
+            {'params': decay_params, 'weight_decay': weight_decay},
+            {'params': nodecay_params, 'weight_decay': 0}
+        ]
+        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+        fused_available = fused_available and 'cuda' in device
+        print(f'used AdamW fused: {fused_available}')
+        return torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=fused_available)
 
 #--------------------------------------------------------
 
@@ -226,7 +237,7 @@ def getlr(step):
         return lr
     if step > max_steps:
         return min_lr
-    lr = min_lr + 0.5 * (max_lr - min_lr) * (1 - math.cos((math.pi * (step - max_steps)) / (max_steps - warmup_steps)))
+    lr = min_lr + 0.5 * (max_lr - min_lr) * (1 - math.cos((math.pi * (step - max_steps)) / (max_steps - warmup_steps))) # some little math here
     return lr
     # decay_ratio = (step - warmup_steps) / (max_steps - warmup_steps) # decay_ratio from 0 to 1
     # assert 0 <= decay_ratio <= 1
@@ -234,7 +245,8 @@ def getlr(step):
     # return min_lr + coeff * (max_lr - min_lr)
 
 # optimize:
-optimizer = torch.optim.AdamW(model.parameters(), lr = 3e-4, betas=(0.9, 0.95), eps=1e-8)
+optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
+
 for step in range(max_steps):
     t0 = time.time()
     x, y = train_loader.next_batch()
@@ -252,7 +264,7 @@ for step in range(max_steps):
     t1 = time.time()
     dt = (t1 - t0) * 1000
     tokenpers = (x.shape[0] * x.shape[1]) / (t1 - t0)
-    print(f'{step} step, current loss: {loss}, lr: {lr:.4e}, norm: {norm:.2f}, time for a batch: {dt}ms, token/dt: {tokenpers:.2f}')
+    print(f'{step} step, current loss: {loss}| lr: {lr:.4e}| norm: {norm:.2f}| time for a batch: {dt}ms| token/dt: {tokenpers:.2f}')
 
 import sys; sys.exit(0)
 # generate
