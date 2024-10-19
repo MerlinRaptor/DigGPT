@@ -197,18 +197,16 @@ class Dataloader:
             self.current_position = 0
         return x, y
 
-
+import time
 
 device = 'cpu'
 if torch.cuda.is_available():
     device = 'cuda'
 print(f'using device:{device}')
 
-torch.manual_seed(1337)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(1337)
+train_loader = Dataloader(B = 4, T = 1024) 
 
-train_loader = Dataloader(4, 32) # B = 4, T = 32
+# torch.set_float32_matmul_precision('high')
 
 model = GPT(GPTConfig())
 model.to(device)
@@ -216,13 +214,20 @@ model.to(device)
 # optimize:
 optimizer = torch.optim.AdamW(model.parameters(), lr = 3e-4)
 for i in range(50):
+    t0 = time.time()
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
-    logits, loss = model(x, y)
+    with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        logits, loss = model(x, y)
+        import code; code.interact(local=locals())
     loss.backward()
     optimizer.step()
-    print(f'{i} step, current loss: {loss}')
+    torch.cuda.synchronize() # synchronize gpu and cpu for timing accuracy
+    t1 = time.time()
+    dt = (t1 - t0) * 1000
+    tokenpers = (x.shape[0] * x.shape[1]) / (t1 - t0)
+    print(f'{i} step, current loss: {loss}, time for a batch: {dt}ms, token/dt: {tokenpers:.2f}')
 
 import sys; sys.exit(0)
 # generate
